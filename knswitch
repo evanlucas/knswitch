@@ -1,0 +1,201 @@
+#!/usr/bin/env bash
+
+set -eou pipefail
+
+selected=
+current_context=
+namespaces=
+got_namespaces=0
+
+function enter_fullscreen() {
+  tput smcup
+  stty -echo
+}
+
+function leave_fullscreen() {
+  tput rmcup
+  stty echo
+}
+
+function handle_sigint() {
+  leave_fullscreen
+  S="$?"
+  kill 0
+  exit $S
+}
+
+function handle_sigtstp() {
+  leave_fullscreen
+  kill -s SIGSTOP $$
+}
+
+function show_help() {
+  cat <<-EOF
+usage: knswitch [options] [namespace]
+
+options:
+  -h, --help          show help and usage
+
+examples:
+  $ knswitch          # interactively select namespace
+  $ knswitch default  # select the default namespace for the current context
+
+EOF
+}
+
+function get_namespaces() {
+  kubectl get ns --no-headers -o=custom-columns='NAME:.metadata.name' | sort -u
+}
+
+function ensure_namespaces() {
+  if [[ "$got_namespaces" -eq "0" ]]; then
+    namespaces=$(get_namespaces)
+    got_namespaces=1
+  fi
+}
+
+function get_current_context() {
+  if [[ -z $current_context ]]; then
+    current_context="$(kubectl config view -o=jsonpath='{.current-context}')"
+  fi
+
+  echo "$current_context"
+}
+
+function get_current_namespace() {
+  local ctx="$(get_current_context)"
+  local jsonpath="{.contexts[?(@.name==\"${ctx}\")].context.namespace}"
+  local ns="$(kubectl config view -o jsonpath=$jsonpath)"
+  if [[ -z "$ns" ]]; then
+    echo "default"
+  else
+    echo "$ns"
+  fi
+}
+
+function list_namespaces() {
+  ensure_namespaces
+  for ns in $namespaces; do
+    echo $ns
+  done
+}
+
+function prev_ns() {
+  list_namespaces | grep $selected -B 1 | head -n 1
+}
+
+function next_ns() {
+  list_namespaces | grep $selected -A 1 | tail -n 1
+}
+
+BULLET='>'
+function display_namespaces_with_selected() {
+  ensure_namespaces
+  selected="$1"
+  echo
+  for ns in $namespaces; do
+    if test "$ns" = "$selected"; then
+      printf "  \033[35m$BULLET\033[0m $ns\033[0m\n"
+    else
+      printf "    \e[2m$ns\e[22m\n"
+    fi
+  done
+  echo
+}
+
+function ns_exists() {
+  local ns="$1"
+  ensure_namespaces
+  for n in $namespaces; do
+    if test "$ns" = "$n"; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+function use() {
+  local ns="$1"
+  ns_exists "$ns" || {
+    echo "namespace: \"$ns\" does not exist"
+    exit 1
+  }
+  local ctx=$(get_current_context)
+  echo "switching to namespace: $ns"
+  kubectl config set-context "$ctx" --namespace="$ns"
+}
+
+function display_namespaces() {
+  local ns=$(get_current_namespace)
+
+  ns_exists "$ns" || {
+    ns="default"
+  }
+
+  enter_fullscreen
+  clear
+  display_namespaces_with_selected $ns
+
+  trap handle_sigint INT
+  trap handle_sigtstp SIGTSTP
+
+  ESCAPE_SEQ=$'\033'
+  UP=$'A'
+  DOWN=$'B'
+
+  while true; do
+    read -rsn 1 key
+    case "$key" in
+      $ESCAPE_SEQ)
+        # Handle ESC sequences followed by other characters, i.e. arrow keys
+        read -rsn 1 -t 1 tmp
+        if [[ "$tmp" == "[" ]]; then
+          read -rsn 1 -t 1 arrow
+          case "$arrow" in
+            $UP)
+              clear
+              display_namespaces_with_selected $(prev_ns)
+              ;;
+            $DOWN)
+              clear
+              display_namespaces_with_selected $(next_ns)
+              ;;
+          esac
+        fi
+        ;;
+      "k")
+        clear
+        display_namespaces_with_selected $(prev_ns)
+        ;;
+      "j")
+        clear
+        display_namespaces_with_selected $(next_ns)
+        ;;
+      "q")
+        clear
+        leave_fullscreen
+        exit
+        ;;
+      "")
+        display_namespaces_with_selected $selected
+        clear
+        leave_fullscreen
+        use $selected
+        exit
+        ;;
+    esac
+  done
+}
+
+if test $# -eq 0; then
+  display_namespaces
+else
+  while test $# -ne 0; do
+    case $1 in
+      -h|--help) show_help; exit ;;
+      *) use "$1"; exit ;;
+    esac
+    shift
+  done
+fi

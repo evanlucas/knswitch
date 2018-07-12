@@ -1,0 +1,15 @@
+{
+  "name": "knswitch",
+  "version": "0.1.0",
+  "description": "Switch kubernetes namespaces with ease",
+  "bin": {
+    "knswitch": "knswitch"
+  },
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": ["kubernetes", "namespaces", "k8s"],
+  "author": "Evan Lucas <evanlucas@me.com> (https://evanlucas.com)",
+  "license": "MIT"
+}
